@@ -1,5 +1,10 @@
 ---
 title: 'Machine Learning: Logistic Regression with R'
+knit: (function(input_file, encoding) {
+    out_dir <- 'docs';
+    rmarkdown::render(input_file,
+      encoding=encoding,
+      output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 author: "Mutua Kilai"
 date: "`r Sys.Date()`"
 output: html_document
@@ -9,22 +14,248 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+# Introduction
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+In this project, we fit a logistic regression model to predict customers who can click social network adverts. The packages used in this section are given:
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r,warning=FALSE, message=FALSE}
+# helper packages
 
-```{r cars}
-summary(cars)
+library(dplyr) # data manipulation
+
+library(ggplot2) # data visualization
+
+library(rsample) # splitting
+
+library(janitor) # creating tables
+
+library(visdat) # visualize missing values
+
+# modeling packages
+
+library(caret)
+
+# feature interpretability
+
+library(vip)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+The data set is imported via `read.csv()` function.
+
+```{r}
+# importing data
+
+Data <- read.csv("Social_Network_Ads.csv")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+We drop the first column since it is not useful in the modeling part.
+
+```{r}
+Data <- Data[,-1]
+```
+
+
+We investigate if there were missing values in the data set using `visdat`.
+
+```{r, warning=FALSE}
+vis_miss(Data)
+```
+
+
+A brief EDA is conducted on the data to visualize the distribution of various attributes.
+
+```{r}
+# section of data
+
+Datahe <- head(Data)
+
+knitr::kable(Datahe)
+```
+
+
+The `ggplot2` package is used to do the visualization. 
+
+Majority of the respondents are females.
+
+```{r}
+Gender <- Data %>% 
+  tabyl(Gender) %>% 
+  adorn_pct_formatting(digits = 1)
+knitr::kable(Gender)
+```
+
+
+
+```{r}
+# gender
+
+ggplot(Data, aes(x = Gender, fill = Gender)) + geom_bar(width = 0.2,show.legend = FALSE) + theme_light()
+```
+
+
+```{r}
+# age 
+
+ggplot(Data, aes(x = Age)) + geom_histogram(bins = 20) + theme_light()
+```
+
+
+
+```{r}
+# estimated salary
+
+ggplot(Data, aes(EstimatedSalary)) + geom_histogram(bins = 20) + theme_light()
+```
+
+
+The `target` variable is whether a customer purchased or did not purchase. Majority of the customers do not purchase. 
+
+```{r}
+Data <- Data %>% 
+  mutate(Purchased = ifelse(Purchased == "0", "No", "Yes"),
+    Purchased = as.factor(Purchased))
+
+# table for outcome
+
+Purchase <- Data %>% 
+  tabyl(Purchased) %>% 
+  adorn_pct_formatting(digits = 1)
+knitr::kable(Purchase)
+```
+
+
+
+```{r}
+ggplot(Data, aes(x = Purchased, fill = Purchased)) + geom_bar(width = 0.2, show.legend = FALSE) + theme_light()
+```
+
+
+
+The data set is split into training and testing data sets using the `rsample` package. We can however employ several packages to do the data partition.
+
+- `caret`
+- `base R function`
+- `rsample`
+- `h20`
+
+80\% of the data is used for training and 20\% used for testing.
+
+
+```{r}
+# convert the character to factor
+
+Data <- Data %>% 
+  mutate_if(is.character, as.factor)
+
+
+set.seed(123) # for reproducibility
+
+Index <- initial_split(Data, prop = 0.8)
+
+Training <- training(Index)
+
+Testing <- testing(Index)
+```
+
+
+Since we have the data set for training and testing we use the `caret` package to perform the machine learning. The features are `Gender, Age, Estimated Salary`. The target variable is `Purchased`. 
+
+
+We fit a model with the three features and assess the accuracy with the training set. We perform cross validation.
+
+
+```{r}
+set.seed(123)
+
+# model 1
+
+Model <- train(
+  Purchased ~.,
+  data = Training,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10)
+)
+
+# model 2
+
+Model2 <- train(
+  Purchased ~ Gender + Age,
+  data = Training,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(method = "cv", number = 10)
+)
+```
+
+
+Out of sample statistic. Model 1 is the best model with the highest accuracy so we choose that model to proceed. 
+
+```{r}
+# out of sample measures
+
+summary(
+  resamples(
+    list(
+      model1 = Model, 
+      model2 = Model2
+    )
+  )
+)$statistics$Accuracy
+```
+
+
+The confusion matrix for the training set is given by:
+
+```{r}
+
+Preds <- predict(Model, Training)
+
+confusionMatrix(
+  data = relevel(Preds, ref = "Yes"),
+  reference = relevel(Training$Purchased, ref = "Yes")
+)
+```
+
+
+The ROC curve for the training set is given below.
+
+```{r}
+library(ROCR)
+
+PredTra <- predict(Model, Training, type = "prob")$"Yes"
+
+Perf <- prediction(PredTra, Training$Purchased) %>% 
+  performance(measure = "tpr", x.measure = "fpr")
+plot(Perf)
+```
+
+
+We implement our model to the test data.
+
+```{r}
+# checking on test data
+
+TestP <- predict(Model, Testing)
+
+confusionMatrix(
+  data = relevel(TestP, ref = "Yes"),
+  reference = relevel(Testing$Purchased, ref = "Yes")
+)
+```
+
+
+
+The ROC curve for the testing data.
+
+```{r}
+TestR <- predict(Model, Testing,type = "prob")$"Yes"
+
+PerT <- prediction(TestR,Testing$Purchased) %>% 
+  performance(measure = "tpr", x.measure = "fpr")
+plot(PerT)
+```
+
